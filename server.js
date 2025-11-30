@@ -89,22 +89,29 @@ async function searchDirectByImdb(imdbNumeric, expectedTitle = null) {
         
         // Încercăm ambele variante
         const searchVariants = [
-            imdbClean,    // 468569 (fără zerouri)
+            imdbClean,    // 468569 (fără zerouri) - PRIORITATE
             imdbNumeric   // 0468569
         ];
         
         for (const variant of searchVariants) {
-            console.log(`🔍 Caut via AJAX: ${variant}`);
+            console.log(`🔍 Caut via paginare_filme.php: ${variant}`);
             
-            // Site-ul folosește AJAX pentru căutare!
-            const ajaxUrl = `https://www.subtitrari-noi.ro/index_centru_ajax.php?cautare=${encodeURIComponent(variant)}&tip=2`;
+            // Site-ul folosește paginare_filme.php pentru rezultate!
+            const ajaxUrl = `https://www.subtitrari-noi.ro/paginare_filme.php`;
             
-            const response = await axios.get(ajaxUrl, {
+            const response = await axios.post(ajaxUrl, new URLSearchParams({
+                'search_q': '1',
+                'cautare': variant,
+                'tip': '2',  // 2 = toate filmele
+                'page_nr': '1'
+            }), {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml',
                     'Accept-Language': 'ro-RO,ro;q=0.9,en;q=0.8',
-                    'X-Requested-With': 'XMLHttpRequest'
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': 'https://www.subtitrari-noi.ro/'
                 },
                 timeout: 15000
             });
@@ -114,29 +121,29 @@ async function searchDirectByImdb(imdbNumeric, expectedTitle = null) {
             // Colectăm TOATE rezultatele
             const results = [];
             
-            $('a[href*="movie_details"], a[href*="Subtitrari"]').each((i, elem) => {
+            // Căutăm link-uri de forma: /Subtitrari-YYYY/Nume_Film_(YYYY)/ID
+            $('a[href*="/Subtitrari-"], a[href*="movie_details"]').each((i, elem) => {
                 const href = $(elem).attr('href');
                 const text = $(elem).text().trim();
                 
-                if (href) {
-                    // Verificăm ambele formate de link
+                if (href && text) {
                     let movieId = null;
                     
-                    // Format 1: index.php?page=movie_details&act=1&id=XXXXX
-                    let match = href.match(/id=(\d+)/);
+                    // Format 1: /Subtitrari-2008/The_Dark_Knight_(2008)/12345
+                    let match = href.match(/\/(\d+)$/);
                     if (match && match[1]) {
                         movieId = match[1];
                     }
                     
-                    // Format 2: /Subtitrari-2008/The_Dark_Knight_(2008)/XXXXX
+                    // Format 2: index.php?page=movie_details&act=1&id=12345
                     if (!movieId) {
-                        match = href.match(/\/(\d+)$/);
+                        match = href.match(/id=(\d+)/);
                         if (match && match[1]) {
                             movieId = match[1];
                         }
                     }
                     
-                    if (movieId && text) {
+                    if (movieId && text.length > 3) {  // Ignoră link-uri fără text
                         results.push({
                             id: movieId,
                             href: href,
@@ -146,18 +153,28 @@ async function searchDirectByImdb(imdbNumeric, expectedTitle = null) {
                 }
             });
             
-            if (results.length > 0) {
-                console.log(`✅ Găsite ${results.length} rezultate pentru "${variant}"`);
-                results.forEach((r, i) => {
+            // Eliminăm duplicate (același ID)
+            const uniqueResults = [];
+            const seenIds = new Set();
+            for (const result of results) {
+                if (!seenIds.has(result.id)) {
+                    seenIds.add(result.id);
+                    uniqueResults.push(result);
+                }
+            }
+            
+            if (uniqueResults.length > 0) {
+                console.log(`✅ Găsite ${uniqueResults.length} rezultate pentru "${variant}"`);
+                uniqueResults.forEach((r, i) => {
                     console.log(`   ${i + 1}. ID=${r.id} - "${r.text}"`);
                 });
                 
                 // Dacă avem un titlu așteptat, încercăm să găsim match-ul corect
-                if (expectedTitle && results.length > 1) {
+                if (expectedTitle && uniqueResults.length > 1) {
                     const normalized = normalize(expectedTitle);
                     console.log(`🔍 Caut match pentru: "${expectedTitle}"`);
                     
-                    for (const result of results) {
+                    for (const result of uniqueResults) {
                         const resultNormalized = normalize(result.text);
                         
                         if (resultNormalized.includes(normalized) || normalized.includes(resultNormalized)) {
@@ -170,8 +187,8 @@ async function searchDirectByImdb(imdbNumeric, expectedTitle = null) {
                 }
                 
                 // Luăm primul rezultat
-                console.log(`📌 Folosesc primul rezultat: ID=${results[0].id} - "${results[0].text}"`);
-                const result = { id: results[0].id, href: results[0].href, text: results[0].text };
+                console.log(`📌 Folosesc primul rezultat: ID=${uniqueResults[0].id} - "${uniqueResults[0].text}"`);
+                const result = { id: uniqueResults[0].id, href: uniqueResults[0].href, text: uniqueResults[0].text };
                 cache.set(cacheKey, { data: result, timestamp: Date.now() });
                 return result;
             }
