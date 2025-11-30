@@ -84,8 +84,12 @@ async function searchOnSite(title, year, imdbId) {
     }
     
     try {
+        // Extragem doar numerele din IMDB ID (tt1375666 -> 1375666)
+        const imdbNumeric = imdbId.replace(/\D/g, '');
+        
         // Încercăm mai multe strategii de căutare
         const searchTerms = [
+            imdbNumeric,                      // 1375666 (PRIORITATE!)
             imdbId,                           // tt1375666
             `${title} ${year}`,               // Inception 2010
             title                             // Inception
