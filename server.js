@@ -71,6 +71,66 @@ function normalize(text) {
         .trim();
 }
 
+// Funcție simplificată pentru căutare directă după IMDB numeric
+async function searchDirectByImdb(imdbNumeric) {
+    const cacheKey = `search:${imdbNumeric}`;
+    
+    if (cache.has(cacheKey)) {
+        const cached = cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < CACHE_TTL) {
+            console.log('📦 Folosesc rezultate din cache');
+            return cached.data;
+        }
+    }
+    
+    try {
+        console.log(`🔍 Caut direct după IMDB: ${imdbNumeric}`);
+        const searchUrl = `https://www.subtitrari-noi.ro/?s=${imdbNumeric}`;
+        
+        const response = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml',
+                'Accept-Language': 'ro-RO,ro;q=0.9,en;q=0.8'
+            },
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(response.data);
+        
+        // Căutăm link-ul către movie_details
+        let movieId = null;
+        let movieHref = null;
+        
+        $('a[href*="movie_details"]').each((i, elem) => {
+            const href = $(elem).attr('href');
+            
+            if (href && !movieId) {
+                const match = href.match(/id=(\d+)/);
+                if (match && match[1]) {
+                    movieId = match[1];
+                    movieHref = href;
+                    console.log(`✅ Găsit film: ID=${movieId}`);
+                    return false; // stop după primul rezultat
+                }
+            }
+        });
+        
+        if (movieId) {
+            const result = { id: movieId, href: movieHref };
+            cache.set(cacheKey, { data: result, timestamp: Date.now() });
+            return result;
+        }
+        
+        console.log('❌ Nu s-au găsit rezultate');
+        return null;
+        
+    } catch (error) {
+        console.error('❌ Eroare la căutare:', error.message);
+        return null;
+    }
+}
+
 // Funcție pentru a căuta pe site după numele filmului
 async function searchOnSite(title, year, imdbId) {
     const cacheKey = `search:${imdbId}`;
@@ -215,29 +275,25 @@ async function searchSubtitles(imdbId, type, season, episode) {
         console.log(`\n${'='.repeat(60)}`);
         console.log(`🎯 Cerere: ${type} - ${imdbId}${season ? ` S${season}E${episode}` : ''}`);
         
-        // Pasul 1: Obținem informații despre film/serial
-        const info = await getMediaInfo(imdbId, type);
+        // Extragem numerele din IMDB ID
+        const imdbNumeric = imdbId.replace(/\D/g, '');
+        console.log(`🔢 IMDB numeric: ${imdbNumeric}`);
         
-        if (!info) {
-            console.log('⚠️ Nu s-au putut obține informații despre titlu');
-            return [];
-        }
-        
-        // Pasul 2: Căutăm pe site
-        const searchResult = await searchOnSite(info.title, info.year, imdbId);
+        // Căutăm DIRECT după IMDB numeric (site-ul tău suportă asta!)
+        const searchResult = await searchDirectByImdb(imdbNumeric);
         
         if (!searchResult) {
             console.log('❌ Nu s-a găsit pe site');
             return [];
         }
         
-        // Pasul 3: Extragem subtitrările
+        // Extragem subtitrările
         const subtitles = await getSubtitlesFromPage(
             searchResult.id, 
             type, 
             season, 
             episode,
-            info.title
+            'Subtitrare'
         );
         
         console.log(`📊 Total: ${subtitles.length} subtitrări`);
