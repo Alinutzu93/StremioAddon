@@ -3,9 +3,17 @@ services:
     name: stremio-subtitrari-noi
     env: node
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
     healthCheckPath: /manifest.json
     autoDeploy: true
+```
+
+**Creează `.gitignore`:**
+```
+node_modules/
+.env
+*.log
+.DS_Store
