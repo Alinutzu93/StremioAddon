@@ -72,7 +72,7 @@ function normalize(text) {
 }
 
 // Funcție simplificată pentru căutare directă după IMDB numeric
-async function searchDirectByImdb(imdbNumeric) {
+async function searchDirectByImdb(imdbNumeric, expectedTitle = null) {
     const cacheKey = `search:${imdbNumeric}`;
     
     if (cache.has(cacheKey)) {
@@ -84,45 +84,102 @@ async function searchDirectByImdb(imdbNumeric) {
     }
     
     try {
-        console.log(`🔍 Caut direct după IMDB: ${imdbNumeric}`);
-        const searchUrl = `https://www.subtitrari-noi.ro/?s=${imdbNumeric}`;
+        // Ștergem zerouri din față (0468569 -> 468569)
+        const imdbClean = imdbNumeric.replace(/^0+/, '');
         
-        const response = await axios.get(searchUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml',
-                'Accept-Language': 'ro-RO,ro;q=0.9,en;q=0.8'
-            },
-            timeout: 15000
-        });
-
-        const $ = cheerio.load(response.data);
+        // Încercăm ambele variante
+        const searchVariants = [
+            imdbClean,    // 468569 (fără zerouri)
+            imdbNumeric   // 0468569
+        ];
         
-        // Căutăm link-ul către movie_details
-        let movieId = null;
-        let movieHref = null;
-        
-        $('a[href*="movie_details"]').each((i, elem) => {
-            const href = $(elem).attr('href');
+        for (const variant of searchVariants) {
+            console.log(`🔍 Caut via AJAX: ${variant}`);
             
-            if (href && !movieId) {
-                const match = href.match(/id=(\d+)/);
-                if (match && match[1]) {
-                    movieId = match[1];
-                    movieHref = href;
-                    console.log(`✅ Găsit film: ID=${movieId}`);
-                    return false; // stop după primul rezultat
+            // Site-ul folosește AJAX pentru căutare!
+            const ajaxUrl = `https://www.subtitrari-noi.ro/index_centru_ajax.php?cautare=${encodeURIComponent(variant)}&tip=2`;
+            
+            const response = await axios.get(ajaxUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml',
+                    'Accept-Language': 'ro-RO,ro;q=0.9,en;q=0.8',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                timeout: 15000
+            });
+
+            const $ = cheerio.load(response.data);
+            
+            // Colectăm TOATE rezultatele
+            const results = [];
+            
+            $('a[href*="movie_details"], a[href*="Subtitrari"]').each((i, elem) => {
+                const href = $(elem).attr('href');
+                const text = $(elem).text().trim();
+                
+                if (href) {
+                    // Verificăm ambele formate de link
+                    let movieId = null;
+                    
+                    // Format 1: index.php?page=movie_details&act=1&id=XXXXX
+                    let match = href.match(/id=(\d+)/);
+                    if (match && match[1]) {
+                        movieId = match[1];
+                    }
+                    
+                    // Format 2: /Subtitrari-2008/The_Dark_Knight_(2008)/XXXXX
+                    if (!movieId) {
+                        match = href.match(/\/(\d+)$/);
+                        if (match && match[1]) {
+                            movieId = match[1];
+                        }
+                    }
+                    
+                    if (movieId && text) {
+                        results.push({
+                            id: movieId,
+                            href: href,
+                            text: text
+                        });
+                    }
                 }
+            });
+            
+            if (results.length > 0) {
+                console.log(`✅ Găsite ${results.length} rezultate pentru "${variant}"`);
+                results.forEach((r, i) => {
+                    console.log(`   ${i + 1}. ID=${r.id} - "${r.text}"`);
+                });
+                
+                // Dacă avem un titlu așteptat, încercăm să găsim match-ul corect
+                if (expectedTitle && results.length > 1) {
+                    const normalized = normalize(expectedTitle);
+                    console.log(`🔍 Caut match pentru: "${expectedTitle}"`);
+                    
+                    for (const result of results) {
+                        const resultNormalized = normalize(result.text);
+                        
+                        if (resultNormalized.includes(normalized) || normalized.includes(resultNormalized)) {
+                            console.log(`   ✅ Match găsit: "${result.text}"`);
+                            const finalResult = { id: result.id, href: result.href, text: result.text };
+                            cache.set(cacheKey, { data: finalResult, timestamp: Date.now() });
+                            return finalResult;
+                        }
+                    }
+                }
+                
+                // Luăm primul rezultat
+                console.log(`📌 Folosesc primul rezultat: ID=${results[0].id} - "${results[0].text}"`);
+                const result = { id: results[0].id, href: results[0].href, text: results[0].text };
+                cache.set(cacheKey, { data: result, timestamp: Date.now() });
+                return result;
             }
-        });
-        
-        if (movieId) {
-            const result = { id: movieId, href: movieHref };
-            cache.set(cacheKey, { data: result, timestamp: Date.now() });
-            return result;
+            
+            console.log(`   ⚠️ Niciun rezultat pentru "${variant}"`);
         }
         
-        console.log('❌ Nu s-au găsit rezultate');
+        console.log('❌ Nu s-au găsit rezultate pentru nicio variantă');
         return null;
         
     } catch (error) {
@@ -275,12 +332,23 @@ async function searchSubtitles(imdbId, type, season, episode) {
         console.log(`\n${'='.repeat(60)}`);
         console.log(`🎯 Cerere: ${type} - ${imdbId}${season ? ` S${season}E${episode}` : ''}`);
         
+        // Obținem info de la OMDB (opțional, doar pentru titlu)
+        let titleInfo = null;
+        try {
+            titleInfo = await getMediaInfo(imdbId, type);
+        } catch (e) {
+            console.log('⚠️ Nu s-a putut obține info de la OMDB, continuăm fără titlu');
+        }
+        
         // Extragem numerele din IMDB ID
         const imdbNumeric = imdbId.replace(/\D/g, '');
         console.log(`🔢 IMDB numeric: ${imdbNumeric}`);
         
-        // Căutăm DIRECT după IMDB numeric (site-ul tău suportă asta!)
-        const searchResult = await searchDirectByImdb(imdbNumeric);
+        // Căutăm cu titlul dacă îl avem
+        const searchResult = await searchDirectByImdb(
+            imdbNumeric, 
+            titleInfo ? titleInfo.title : null
+        );
         
         if (!searchResult) {
             console.log('❌ Nu s-a găsit pe site');
@@ -293,7 +361,7 @@ async function searchSubtitles(imdbId, type, season, episode) {
             type, 
             season, 
             episode,
-            'Subtitrare'
+            titleInfo ? titleInfo.title : 'Subtitrare'
         );
         
         console.log(`📊 Total: ${subtitles.length} subtitrări`);
